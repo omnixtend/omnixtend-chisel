@@ -3,6 +3,16 @@ package omnixtend
 import chisel3._
 import chisel3.util._
 
+object TLOEHeaderConstants {
+  val TLOE_NAK = 0.U(1.W)
+  val TLOE_ACK = 1.U(1.W)
+
+  val TLOE_TYPE_NORMAL = 0.U(2.W)
+  val TLOE_TYPE_ACKONLY = 1.U(2.W)
+  val TLOE_TYPE_OPEN = 2.U(2.W)
+  val TLOE_TYPE_CLOSE = 3.U(2.W)
+}
+
 /**
  * EthernetHeader class defines the structure of an Ethernet header.
  */
@@ -17,7 +27,7 @@ class EthernetHeader extends Bundle {
  * OmniXtendHeader class defines the structure of an OmniXtend header.
  * 64 Bits (8 Bytes)
  */
-class OmniXtendHeader extends Bundle {
+class tloeHeader extends Bundle {
   val vc        = UInt(3.W)     // Virtual Channel
   val msgType   = UInt(4.W)     // Reserved
   val res1      = UInt(3.W)     // Reserved
@@ -58,9 +68,16 @@ class TLMessageLow extends Bundle {
  */
 class TloePacket extends Bundle {
   val ethHeader   = new EthernetHeader
-  val omniHeader  = new OmniXtendHeader
+  val tloeHeader  = new tloeHeader
   val tlMsgHigh   = new TLMessageHigh
   val tlMsgLow    = new TLMessageLow
+}
+
+object MsgType {
+  val NORMAL     = 0.U(4.W)     // Normal message
+  val ACKONLY    = 1.U(4.W)     // Acknowledgment only message
+  val OPECONN    = 2.U(4.W)     // Open connection message
+  val CLOSECONN  = 3.U(4.W)     // Close connection message
 }
 
 /**
@@ -105,7 +122,12 @@ object TloePacGen {
    * @return The Sequence Number as a 22-bit UInt.
    */
   def getSeqNum(packet: Vec[UInt]): UInt = {
-    val seqNum = Cat(toBigEndian(packet(1))(5, 0), toBigEndian(packet(2))(63, 48))
+    val seqNum = Cat((toBigEndian(packet(1)))(5, 0), (toBigEndian(packet(2)))(63, 48))
+    seqNum
+  }
+
+  def getSeqNumNoEndian(packet: Vec[UInt]): UInt = {
+    val seqNum = Cat(packet(1)(5, 0), packet(2)(63, 48))
     seqNum
   }
 
@@ -117,6 +139,11 @@ object TloePacGen {
   def getSeqNumAck(packet: Vec[UInt]): UInt = {
     val seqNumAck = toBigEndian(packet(2))(47, 26)  // Extracts bits 23:21 from packet(2)
     seqNumAck
+  }
+
+  def getMsgType(packet: Vec[UInt]): UInt = {
+    val msgType = toBigEndian(packet(1))(12, 9)
+    msgType
   }
 
   /**
@@ -149,5 +176,27 @@ object TloePacGen {
   def getMask(packet: Vec[UInt], size: UInt): UInt = {
     val mask = Cat(toBigEndian(packet(size-2.U))(15, 0), toBigEndian(packet(size-1.U))(63, 16))
     mask
+  }
+
+  def getType(packet: Vec[UInt]): UInt = {
+    // msgType is in the first 64-bit word (packet(0)) at bits 63-60
+    val msgType = toBigEndian(packet(1))(12, 9)
+    msgType
+  }
+
+  def getAck(packet: Vec[UInt]): UInt = {
+    val ack = toBigEndian(packet(2))(25, 25)
+    ack
+  }
+
+  // 패킷 크기 계산 함수
+  def getPacketSize(size: UInt): UInt = {
+    // size는 2의 거듭제곱으로 표현된 데이터 크기 (바이트 단위)
+    // 예: size=3이면 8바이트 (2^3)
+    // 패킷 크기는 64비트(8바이트) 단위로 계산
+    // 헤더(8바이트) + 데이터(2^size 바이트) + 마스크(1바이트) + 패딩
+    val dataSize = 1.U << size
+    val totalSize = (dataSize + 9.U + 7.U) >> 3.U  // (데이터 + 헤더+마스크 + 7) / 8 (올림)
+    totalSize
   }
 }
