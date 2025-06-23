@@ -5,12 +5,13 @@ import chisel3.util._
 
 import chisel3.experimental.{IntParam, BaseModule}
 import freechips.rocketchip.amba.axi4._
-import freechips.rocketchip.subsystem.BaseSubsystem
-import freechips.rocketchip.config.{Parameters, Field, Config}
-import freechips.rocketchip.diplomacy._
+import org.chipsalliance.cde.config.{Parameters, Field, Config}
+import freechips.rocketchip.diplomacy._ 
+import freechips.rocketchip.subsystem.{BaseSubsystem, MBUS}
 import freechips.rocketchip.regmapper.{HasRegMap, RegField}
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util.UIntIsOneOf
+import freechips.rocketchip.prci.{ClockSinkDomain, ClockSinkParameters}
 
 case class OXParams(
   address: BigInt = 0x1000,
@@ -23,10 +24,7 @@ case object OXKey extends Field[Option[OXParams]](None)
 
 // Definition of OmniXtend Bundle
 class OmniXtendBundle extends Bundle {
-  val addr        = Input(UInt(64.W))
-  val valid       = Input(Bool())   // signals if the transaction is valid
   val ready       = Output(Bool())  // signals if the transaction can proceed
-  val in          = Input(UInt(8.W))
 
   // Connected to Ethernet IP
   val txdata      = Output(UInt(512.W))
@@ -42,12 +40,6 @@ class OmniXtendBundle extends Bundle {
   val ox_close    = Input(Bool())
   val debug1      = Input(Bool())
   val debug2      = Input(Bool())
-
-  /*
-  val isConn      = Output(Bool())
-  val maxCredit   = Output(UInt(5.W))  // maxCredit 포트 추가
-  val globalTimer = Output(UInt(64.W))  // Add global timer output
-  */
 }
 
 /**
@@ -71,35 +63,33 @@ class OmniXtendNode(implicit p: Parameters) extends LazyModule {
     minLatency         = 1 // Minimum latency for the port
   )))
 
-  lazy val module = new LazyModuleImp(this) {
+  lazy val module = new Impl
+  class Impl extends LazyModuleImp(this) {
     val io = IO(new OmniXtendBundle) // Input/Output bundle
 
     val (in, edge) = node.in(0) // Getting the input node and its edge
 
-    // Registers for storing the validity of Get and PutFullData operations
-    val getValidReg = RegNext(in.a.valid && in.a.bits.opcode === TLMessages.Get, init = false.B)
-    val putValidReg = RegNext(in.a.valid && in.a.bits.opcode === TLMessages.PutFullData, init = false.B)
-    val aValidReg   = RegInit(false.B) // Register to store the validity of any operation
-    val opcodeReg   = RegInit(0.U(3.W)) // Register to store the opcode
-    val sourceReg   = RegInit(0.U(4.W)) // Register to store the source ID
-    val sizeReg     = RegInit(0.U(3.W)) // Register to store the size
-    val paramReg    = RegInit(0.U(2.W)) // Register to store the parameter
-
+    // Core modules
     val TLOEEndpoint = Module(new TLOEEndpoint)
     val tilelinkHandler = Module(new TileLinkHandler)
 
-    val rxPacketVec_ox = dontTouch(Reg(Vec(68, UInt(64.W))))
-    val rxPacketVecSize_ox = dontTouch(RegInit(0.U(8.W)))
-    val doTilelinkHandler_ox = dontTouch(RegInit(false.B))
-    rxPacketVec_ox := TLOEEndpoint.io.rxPacketVec
-    rxPacketVecSize_ox := TLOEEndpoint.io.rxPacketVecSize
-    doTilelinkHandler_ox := TLOEEndpoint.io.doTilelinkHandler
+    // State management - simplified
+    val aValidReg = RegInit(false.B)
+    val oxResponse = RegInit(false.B)
 
+    // Response data registers - only keep essential ones
+    val tlMsgOpcode = RegInit(0.U(3.W))
+    val tlMsgParam = RegInit(0.U(4.W))
+    val tlMsgSize = RegInit(0.U(4.W))
+    val tlMsgSource = RegInit(0.U(26.W))
+    val tlMsgData = RegInit(0.U(512.W))
+
+    // Connect TLOEEndpoint to TileLinkHandler
     tilelinkHandler.io.rxPacketVec := TLOEEndpoint.io.rxPacketVec
     tilelinkHandler.io.rxPacketVecSize := TLOEEndpoint.io.rxPacketVecSize
     tilelinkHandler.io.doTilelinkHandler := TLOEEndpoint.io.doTilelinkHandler
 
-    // Connect shared IO signals using multiplexers
+    // Connect shared IO signals
     io.txdata := TLOEEndpoint.io.txdata
     io.txvalid := TLOEEndpoint.io.txvalid
     io.txlast := TLOEEndpoint.io.txlast
@@ -110,6 +100,7 @@ class OmniXtendNode(implicit p: Parameters) extends LazyModule {
     TLOEEndpoint.io.rxvalid := io.rxvalid
     TLOEEndpoint.io.rxlast := io.rxlast
 
+    // Initialize TLOEEndpoint inputs
     TLOEEndpoint.io.txAddr := 0.U
     TLOEEndpoint.io.txData := 0.U
     TLOEEndpoint.io.txSize := 0.U
@@ -119,25 +110,14 @@ class OmniXtendNode(implicit p: Parameters) extends LazyModule {
     TLOEEndpoint.io.txSource := 0.U
     TLOEEndpoint.io.txParam := 0.U
 
-    TLOEEndpoint.io.rxdata := io.rxdata
-    TLOEEndpoint.io.rxvalid := io.rxvalid
-    TLOEEndpoint.io.rxlast := io.rxlast
-
-    val rxdata_ox = dontTouch(RegInit(0.U(512.W)))
-    val rxvalid_ox = dontTouch(RegInit(false.B))  
-    val rxlast_ox = dontTouch(RegInit(false.B))
-    rxdata_ox := TLOEEndpoint.io.rxdata
-    rxvalid_ox := TLOEEndpoint.io.rxvalid
-    rxlast_ox := TLOEEndpoint.io.rxlast
-
-    // VIO
+    // VIO connections
     TLOEEndpoint.io.ox_open := io.ox_open
     TLOEEndpoint.io.ox_close := io.ox_close
     TLOEEndpoint.io.ox_debug1 := io.debug1
     TLOEEndpoint.io.ox_debug2 := io.debug2
 
-    // When the input channel 'a' is ready and valid
-    when (in.a.fire()) {
+    // Handle input channel 'a' - simplified logic
+    when (in.a.fire) {
       // Transmit the address, data, and opcode from the input channel
       TLOEEndpoint.io.txAddr   := in.a.bits.address
       TLOEEndpoint.io.txData   := in.a.bits.data
@@ -146,19 +126,12 @@ class OmniXtendNode(implicit p: Parameters) extends LazyModule {
       TLOEEndpoint.io.txMask   := in.a.bits.mask
       TLOEEndpoint.io.txSource := in.a.bits.source
       TLOEEndpoint.io.txParam  := in.a.bits.param
-
-      // Store the opcode, source, size, and parameter for response
-      opcodeReg := Mux(in.a.bits.opcode === TLMessages.Get, TLMessages.AccessAckData, TLMessages.AccessAck)
-      sourceReg := in.a.bits.source
-      sizeReg   := in.a.bits.size
-      paramReg  := in.a.bits.param
-
-      TLOEEndpoint.io.txValid := true.B // Mark the transmission as valid
+      TLOEEndpoint.io.txValid  := true.B
     }
 
     // Mark the input channel 'a' as valid
     when (in.a.valid) {
-        aValidReg := true.B
+      aValidReg := true.B
     }
 
     // Default values for the response channel 'd'
@@ -172,79 +145,34 @@ class OmniXtendNode(implicit p: Parameters) extends LazyModule {
     in.d.bits.data    := 0.U
     in.d.bits.corrupt := false.B
 
-    //Debug
-    val dValid = dontTouch(RegInit(false.B))
-    val dOpcode = dontTouch(RegInit(0.U(3.W)))
-    val dParam = dontTouch(RegInit(0.U(2.W)))
-    val dSize = dontTouch(RegInit(0.U(3.W)))
-    val dSource = dontTouch(RegInit(0.U(4.W)))
-    val dSink = dontTouch(RegInit(0.U(4.W)))
-    val dDenied = dontTouch(RegInit(false.B))
-    val dData = dontTouch(RegInit(0.U(512.W)))
-
-    dValid := in.d.valid
-    dOpcode := in.d.bits.opcode
-    dParam := in.d.bits.param
-    dSize := in.d.bits.size
-    dSource := in.d.bits.source
-    dSink := in.d.bits.sink
-    dDenied := in.d.bits.denied
-    dData := in.d.bits.data
-
-    val ep_rxData = dontTouch(RegInit(0.U(512.W)))
-    val ep_rxValid = dontTouch(RegInit(false.B))
-    ep_rxData := tilelinkHandler.io.ep_rxData
-    ep_rxValid := tilelinkHandler.io.ep_rxValid
-
-    val oxResponse = dontTouch(RegInit(false.B))
-
-    val tlMsgOpcode = dontTouch(RegInit(0.U(3.W)))
-    val tlMsgParam = dontTouch(RegInit(0.U(4.W)))
-    val tlMsgSize = dontTouch(RegInit(0.U(4.W)))
-    val tlMsgSource = dontTouch(RegInit(0.U(26.W)))
-    val tlMsgData = dontTouch(RegInit(0.U(512.W)))
-
-    // When received data is not zero, prepare the response
-    //when (TLOEEndpoint.io.ep_rxvalid) {                // RX valid signal received from Ethernet IP
-    when (tilelinkHandler.io.ep_rxValid) {                // RX valid signal received from Ethernet IP
-      in.d.valid        := true.B                    // Mark the response as valid
-
+    // Handle response from TileLinkHandler - simplified
+    when (tilelinkHandler.io.ep_rxValid) {
       tlMsgOpcode := tilelinkHandler.io.ep_rxOpcode
       tlMsgParam := tilelinkHandler.io.ep_rxParam
       tlMsgSize := tilelinkHandler.io.ep_rxSize
       tlMsgSource := tilelinkHandler.io.ep_rxSource
       tlMsgData := tilelinkHandler.io.ep_rxData
-
       oxResponse := true.B
     }
 
+    // Generate response - optimized data selection
     when (oxResponse) {
-        in.d.valid        := true.B                    // Mark the response as valid
-        in.d.bits         := edge.AccessAck(in.a.bits) // Generate an AccessAck response
-        in.d.bits.opcode  := tlMsgOpcode                 // Set the opcode from the register
-        in.d.bits.param   := tlMsgParam                  // Set the parameter from the register
-        in.d.bits.size    := tlMsgSize                   // Set the size from the register
-        in.d.bits.source  := tlMsgSource                 // Set the source ID from the register
-        in.d.bits.sink    := 0.U                       // Set sink to 0
-        in.d.bits.denied  := false.B                   // Mark as not denied
- 
+      in.d.valid := true.B
+      in.d.bits.opcode := tlMsgOpcode
+      in.d.bits.param := tlMsgParam
+      in.d.bits.size := tlMsgSize
+      in.d.bits.source := tlMsgSource
+      in.d.bits.sink := 0.U
+      in.d.bits.denied := false.B
+      
+      // Optimized data selection using bit shifting instead of switch
       when (tlMsgOpcode === TLMessages.AccessAckData) {
-        switch (tlMsgSize) {
-          is (1.U) { in.d.bits.data := tlMsgData(15, 0) } 
-
-          is (2.U) { in.d.bits.data := tlMsgData(31, 0) }
-
-          is (3.U) { in.d.bits.data := tlMsgData(63, 0) }
-
-          is (4.U) { in.d.bits.data := tlMsgData(127, 0) }
-
-          is (5.U) { in.d.bits.data := tlMsgData(255, 0) }
-
-          is (6.U) { in.d.bits.data := tlMsgData }
-        }
-        in.d.bits.corrupt := false.B // Mark as not corrupt
-      }.elsewhen (tlMsgOpcode === TLMessages.AccessAck) {
-        in.d.bits.data    := 0.U
+        // Use bit shifting for data selection - more efficient than switch
+        val dataShift = (1.U << tlMsgSize) - 1.U
+        in.d.bits.data := (tlMsgData & dataShift)(63, 0)
+        in.d.bits.corrupt := false.B
+      }.otherwise {
+        in.d.bits.data := 0.U
       }
       oxResponse := false.B
     }
@@ -258,28 +186,20 @@ class OmniXtendNode(implicit p: Parameters) extends LazyModule {
   }
 }
 
-// OmniXtend Trait
 trait OmniXtend { this: BaseSubsystem =>
   private val portName = "OmniXtend"
   implicit val p: Parameters
 
   val ox = LazyModule(new OmniXtendNode()(p))
 
+  // define local mbus, as BaseSubsystem no longer contains the mbus 
+  private val mbus = locateTLBusWrapper(MBUS)
+
   mbus.coupleTo(portName) { (ox.node
     :*= TLBuffer()
     :*= TLWidthWidget(mbus.beatBytes)
     :*= _)
   }
-}
-
-// OmniXtendModuleImp Trait
-trait OmniXtendModuleImp extends LazyModuleImp {
-  val outer: OmniXtend
-  implicit val p: Parameters
-
-  val io = IO(new OmniXtendBundle)
-
-  io <> outer.ox.module.io
 }
 
 class WithOX(useAXI4: Boolean = false, useBlackBox: Boolean = false) extends Config((site, here, up) => {

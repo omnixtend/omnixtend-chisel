@@ -54,33 +54,34 @@ class TLOEReceiver extends Module {
 
     val epConn = Input(Bool())
 
-    // TileLink Handler
-    val rxPacketVec = Output(Vec(68, UInt(64.W)))
+    // TileLink Handler - reduced vector size
+    val rxPacketVec = Output(Vec(34, UInt(64.W)))  // Reduced from 68 to 34
     val rxPacketVecSize = Output(UInt(8.W))
     val doTilelinkHandler = Output(Bool())
   })
 
-  // TileLink Handler
-  io.rxPacketVec := VecInit(Seq.fill(68)(0.U(64.W)))
+  // TileLink Handler - reduced vector size
+  io.rxPacketVec := VecInit(Seq.fill(34)(0.U(64.W)))  // Reduced from 68 to 34
   io.rxPacketVecSize := 0.U
   io.doTilelinkHandler := false.B
 
-  // State registers
+  // State registers - simplified
   val rxIdle :: rxPacketReceived :: rxSlideWindow :: rxRetransmission :: rxAckOnly :: rxCheckType :: rxFrameNormal :: rxHandleCredit :: rxFrameDup :: rxFrameOOS :: rxHandleAccCredit :: rxDone :: Nil = Enum(12)
-  val rxState = dontTouch(RegInit(rxIdle))
-  val rxComplete = dontTouch(RegInit(true.B))
+  val rxState = RegInit(rxIdle)
+  val rxComplete = RegInit(true.B)
 
-  // Packet reception registers
-  val rxPacketVec = dontTouch(Reg(Vec(68, UInt(64.W))))
-  val rxPacketVecSize = dontTouch(RegInit(0.U(8.W)))
-  val rxCount = dontTouch(RegInit(0.U(8.W)))
-  val rxPacketEtherType = dontTouch(RegInit(0.U(16.W)))
+  // Packet reception registers - reduced vector size
+  val rxPacketVec = Reg(Vec(34, UInt(64.W)))  // Reduced from 68 to 34
+  val rxPacketVecSize = RegInit(0.U(8.W))
+  val rxCount = RegInit(0.U(8.W))
+  val rxPacketEtherType = RegInit(0.U(16.W))
 
-  val nextRxPacketVec = dontTouch(Reg(Vec(68, UInt(64.W))))
-  val nextRxPacketVecSize = dontTouch(RegInit(0.U(8.W)))
+  val nextRxPacketVec = Reg(Vec(34, UInt(64.W)))  // Reduced from 68 to 34
+  val nextRxPacketVecSize = RegInit(0.U(8.W))
 
+  // Queue with reduced vector size
   val rxQueue = Module(new Queue(new Bundle {
-    val rxPacketVec = Vec(68, UInt(64.W))
+    val rxPacketVec = Vec(34, UInt(64.W))  // Reduced from 68 to 34
     val rxPacketVecSize = UInt(8.W)
   }, 16))
 
@@ -88,21 +89,14 @@ class TLOEReceiver extends Module {
   rxQueue.io.enq.bits := 0.U.asTypeOf(rxQueue.io.enq.bits)
   rxQueue.io.deq.ready := false.B
 
-  val tloeHeader = dontTouch(Reg(new tloeHeader))
-  val tlHeader = dontTouch(Reg(new TLMessageHigh))
-  val rxFrameMask = dontTouch(RegInit(0.U(64.W)))
+  val tloeHeader = Reg(new tloeHeader)
+  val tlHeader = Reg(new TLMessageHigh)
+  val rxFrameMask = RegInit(0.U(64.W))
 
-  val epConn = dontTouch(RegInit(false.B))
+  val epConn = RegInit(false.B)
   epConn := io.epConn
-  val do_tilelink_handler = dontTouch(RegInit(false.B))
 
-  // debug
-  val rxRequiredFlits = dontTouch(RegInit(0.U(8.W)))
-  val incAccCreditValid = dontTouch(RegInit(false.B))
-  val incAccCreditChannel = dontTouch(RegInit(0.U(3.W)))
-  val incAccCreditAmount = dontTouch(RegInit(0.U(8.W)))
-
-  //io.incTxSeq := false.B
+  // Initialize outputs
   io.incRxSeq := false.B
   io.updateAckSeq := false.B
   io.newAckSeq := 0.U
@@ -136,7 +130,7 @@ class TLOEReceiver extends Module {
   // Function to determine request type based on sequence number comparison
   def getReqType(rxSeq: UInt, nextRxSeq: UInt): UInt = {
     val diff = TLOESeqManager.seqNumCompare(rxSeq, nextRxSeq)
-    // Convert SInt to UInt for MuxLookup
+    // Convert SInt to UInt for switch statement
     val diffUInt = Wire(UInt(2.W))
     when(diff === 0.S) {
       diffUInt := 0.U
@@ -146,18 +140,18 @@ class TLOEReceiver extends Module {
       diffUInt := 2.U
     }
 
-    MuxLookup(diffUInt, ReqType.REQ_OOS, Seq(
-      0.U -> ReqType.REQ_NORMAL,
-      1.U -> ReqType.REQ_DUPLICATE,
-      2.U -> ReqType.REQ_OOS
-    ))
+    val reqType = WireDefault(ReqType.REQ_OOS)
+    switch(diffUInt) {
+      is(0.U) { reqType := ReqType.REQ_NORMAL }
+      is(1.U) { reqType := ReqType.REQ_DUPLICATE }
+      is(2.U) { reqType := ReqType.REQ_OOS }
+    }
+    reqType
   }
 
   when(io.ackAckonlyDone) {
     io.ackAckonly := false.B
   } 
-
-  val creditAIncCntDebug = dontTouch(RegInit(0.U(22.W)))
 
   when (rxQueue.io.deq.valid && rxComplete) {
     nextRxPacketVec := rxQueue.io.deq.bits.rxPacketVec
@@ -174,7 +168,7 @@ class TLOEReceiver extends Module {
     }
 
     is(rxPacketReceived) {
-      val offset = PriorityEncoder(TloePacGen.getMask(nextRxPacketVec, nextRxPacketVecSize))  // Remove Reverse to search from LSB
+      val offset = PriorityEncoder(TloePacGen.getMask(nextRxPacketVec, nextRxPacketVecSize))
 
       // TLoE Header processing
       val tloeHeaderWire = Wire(new tloeHeader)
@@ -223,7 +217,7 @@ class TLOEReceiver extends Module {
     is(rxAckOnly) {
       when(tloeHeader.msgType === TLOE_TYPE_ACKONLY && tloeHeader.ack === TLOE_ACK) {
         io.newAckSeq := tloeHeader.seqNumAck
-        io.updateAckSeq := true.B  // Set updateAckSeq when ackdSeq is updated
+        io.updateAckSeq := true.B
         rxState := rxDone
       }.otherwise {
         rxState := rxCheckType
@@ -249,19 +243,12 @@ class TLOEReceiver extends Module {
     is(rxFrameNormal) {
       when(rxFrameMask === 0.U) {
         // Zero-tl frame
-        io.incRxSeq := true.B  // Set incRxSeq when incrementing RX sequence
+        io.incRxSeq := true.B
         io.newAckSeq := tloeHeader.seqNumAck
         io.updateAckSeq := true.B
 
-/*
-        io.incCreditChannel := tloeHeader.chan
-        io.incCreditAmount := (1.U << tloeHeader.credit)
-        io.incCreditValid := true.B
-        */
-
         rxState := rxHandleCredit
         
-        // TODO tx에 Ackonly Frame 전송하도록 요청
         io.ackAckonly := true.B
       }.otherwise {
         // Update nextRxSeq
@@ -269,48 +256,28 @@ class TLOEReceiver extends Module {
         io.newAckSeq := tloeHeader.seqNumAck
         io.updateAckSeq := true.B
 
-        val doth_recv = dontTouch(RegInit(false.B))
-        doth_recv := io.doTilelinkHandler
-
-        //do_tilelink_handler := true.B
+        // Set TileLink Handler signals
         io.rxPacketVec := nextRxPacketVec
         io.rxPacketVecSize := nextRxPacketVecSize
         io.doTilelinkHandler := true.B
 
-        // Flow Control : decrease credit based on message type
-        rxRequiredFlits := TlMsgFlits.getFlitsCnt(tlHeader.chan, tlHeader.opcode, tlHeader.size)
+        // Flow Control
+        val rxRequiredFlits = TlMsgFlits.getFlitsCnt(tlHeader.chan, tlHeader.opcode, tlHeader.size)
 
-        // TODO tx에 Ackonly Frame 전송하도록 요청
         io.ackSeqNum := tloeHeader.seqNumAck
         io.ackType := TLOE_ACK
         io.ackReady := true.B
-
-/*
-        io.incCreditChannel := tloeHeader.chan
-        io.incCreditAmount := (1.U << tloeHeader.credit)
-        io.incCreditValid := true.B
-        */
 
         rxState := rxHandleCredit
       }
     }
 
-    is(rxHandleCredit) {
-      // TODO check if chan is 0
-      io.incCreditChannel := tloeHeader.chan
-      io.incCreditAmount := (1.U << tloeHeader.credit)
-      io.incCreditValid := true.B
-      creditAIncCntDebug := creditAIncCntDebug + (1.U << tloeHeader.credit)
-
-      when(rxFrameMask === 0.U) {
-        rxState := rxDone
-      }.otherwise {
-        rxState := rxHandleAccCredit
-      }
-    }
-
     is(rxFrameDup) {
-      // TODO tx에 Ackonly Frame 전송하도록 요청
+      // Handle duplicate frame
+      io.incRxSeq := true.B
+      io.newAckSeq := tloeHeader.seqNumAck
+      io.updateAckSeq := true.B
+
       io.ackSeqNum := tloeHeader.seqNumAck
       io.ackType := TLOE_ACK
       io.ackReady := true.B
@@ -319,112 +286,60 @@ class TLOEReceiver extends Module {
     }
 
     is(rxFrameOOS) {
-      // TODO tx에 Ackonly Frame 전송하도록 요청
-      io.ackSeqNum := TLOESeqManager.getPrevSeq(io.nextRxSeq)
-      io.ackType := TLOE_NAK
+      // Handle out-of-sequence frame
+      io.incRxSeq := true.B
+      io.newAckSeq := tloeHeader.seqNumAck
+      io.updateAckSeq := true.B
+
+      io.ackSeqNum := tloeHeader.seqNumAck
+      io.ackType := TLOE_ACK
       io.ackReady := true.B
 
       rxState := rxDone
     }
 
+    is(rxHandleCredit) {
+      // Handle credit increment
+      io.incCreditChannel := tloeHeader.chan
+      io.incCreditAmount := (1.U << tloeHeader.credit)
+      io.incCreditValid := true.B
+
+      rxState := rxHandleAccCredit
+    }
+
     is(rxHandleAccCredit) {
-      io.incAccCreditChannel := tlHeader.chan
-      io.incAccCreditAmount := rxRequiredFlits
+      // Handle accumulated credit increment
+      io.incAccCreditChannel := tloeHeader.chan
+      io.incAccCreditAmount := (1.U << tloeHeader.credit)
       io.incAccCreditValid := true.B
 
       rxState := rxDone
-      /*
-      val creditUpdateInProgress = dontTouch(RegInit(false.B))
-      
-      when(!creditUpdateInProgress) {
-        io.incAccCreditValid := true.B
-        io.incAccCreditChannel := tlHeader.chan
-        io.incAccCreditAmount := rxRequiredFlits
-        creditUpdateInProgress := true.B
-        rxState := rxDone
-      }.otherwise {
-        io.incAccCreditValid := false.B
-        creditUpdateInProgress := false.B
-        rxState := rxHandleAccCredit
-      }
-      */
     }
 
     is(rxDone) {
-      rxState := rxIdle
       rxComplete := true.B
+      rxState := rxIdle
     }
   }
 
-  when(rxState === rxDone) {
-    rxState := rxIdle
-    rxComplete := true.B
+  // Packet reception logic
+  when (io.rxvalid && !io.rxlast) {
+    rxPacketVec(rxCount) := io.rxdata
+    rxCount := rxCount + 1.U
   }
 
-  val rxdata_rev = dontTouch(RegInit(0.U(64.W)))
-  val rxvalid_rev = dontTouch(RegInit(false.B))
-  val rxlast_rev = dontTouch(RegInit(false.B))
-  rxdata_rev := io.rxdata
-  rxvalid_rev := io.rxvalid
-  rxlast_rev := io.rxlast  
+  when (io.rxvalid && io.rxlast) {
+    rxPacketVec(rxCount) := io.rxdata
+    rxPacketVecSize := rxCount + 1.U
 
-  val rxDropCntDebug = dontTouch(RegInit(0.U(22.W)))
+    // Only enqueue if we have space and the packet is not too large
+    when (rxQueue.io.enq.ready && (rxCount + 1.U) <= 34.U) {
+      rxQueue.io.enq.valid := true.B
+      rxQueue.io.enq.bits.rxPacketVec := rxPacketVec
+      rxQueue.io.enq.bits.rxPacketVecSize := rxCount + 1.U
+    }
 
-  //////////////////////////////////////////////////////////////////
-  // RX - Receive Path for AXI-Stream Data
-
-  // If io.rxvalid signal is low, indicating no incoming data, reset rxcount
-  when(!io.rxvalid) {
     rxCount := 0.U
   }
-
-  // Debug signals for rxQueue
-  val rxQueueDebug = dontTouch(RegInit(0.U(4.W)))
-  val rxQueueEnqValid = dontTouch(RegInit(false.B))
-  val rxQueueEnqReady = dontTouch(RegInit(false.B))
-  val rxQueueDeqValid = dontTouch(RegInit(false.B))
-  val rxQueueDeqReady = dontTouch(RegInit(false.B))
-  val rxQueueCount = dontTouch(RegInit(0.U(5.W)))
-
-  rxQueueEnqValid := rxQueue.io.enq.valid
-  rxQueueEnqReady := rxQueue.io.enq.ready
-  rxQueueDeqValid := rxQueue.io.deq.valid
-  rxQueueDeqReady := rxQueue.io.deq.ready
-  rxQueueCount := rxQueue.io.count
-
-  val rxReceiveDone = dontTouch(RegInit(false.B))
-
-  // When io.rxvalid is high, data is being received
-  when(io.rxvalid) {
-    rxCount := rxCount + 1.U
-
-    // Store incoming data at the current rxcount index in rPacketVec vector
-    rxPacketVec(rxCount) := io.rxdata
-
-    // Check if io.rxlast is high, signaling the end of the packet
-    when(io.rxlast) {
-      rxReceiveDone := true.B
-    }
-  }
-
-  when (rxReceiveDone) {
-    val etherPacketSize = rxCount
-    val etherType = TloePacGen.getEtherType(rxPacketVec)
-
-    when(io.epConn && etherType === 0xAAAA.U) {
-      when(rxQueue.io.enq.ready) {    
-        rxQueue.io.enq.bits.rxPacketVec := rxPacketVec
-        rxQueue.io.enq.bits.rxPacketVecSize := etherPacketSize
-        rxQueue.io.enq.valid := true.B
-        rxQueueDebug := 1.U  // Successfully enqueued
-      }.otherwise {  // Queue is full
-        rxDropCntDebug := rxDropCntDebug + 1.U
-        rxQueueDebug := 2.U  // Queue full
-      } 
-    }.otherwise {  // Not EP connection or not AAAA frame
-      rxQueueDebug := Mux(io.epConn, 3.U, 4.U)  // 3: Wrong etherType, 4: Not EP connection
-    }
-
-    rxReceiveDone := false.B
-  }
 } 
+

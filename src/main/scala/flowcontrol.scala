@@ -263,16 +263,17 @@ class FlowControl extends Module {
 
   // Function to calculate required credits based on TL message
   def calculateRequiredCredits(opcode: UInt, size: UInt): UInt = {
-    val baseCredit = MuxLookup(opcode, 1.U(16.W), Seq(
-      0.U -> 1.U,  // Get
-      1.U -> 1.U,  // PutFullData
-      2.U -> 1.U,  // PutPartialData
-      3.U -> 1.U,  // ArithmeticData
-      4.U -> 1.U,  // LogicalData
-      5.U -> 1.U,  // Intent
-      6.U -> 1.U,  // AcquireBlock
-      7.U -> 1.U   // AcquirePerm
-    ))
+    val baseCredit = WireDefault(1.U(16.W))
+    switch(opcode) {
+      is(0.U) { baseCredit := 1.U(16.W) }  // Get
+      is(1.U) { baseCredit := 1.U(16.W) }  // PutFullData
+      is(2.U) { baseCredit := 1.U(16.W) }  // PutPartialData
+      is(3.U) { baseCredit := 1.U(16.W) }  // ArithmeticData
+      is(4.U) { baseCredit := 1.U(16.W) }  // LogicalData
+      is(5.U) { baseCredit := 1.U(16.W) }  // Intent
+      is(6.U) { baseCredit := 1.U(16.W) }  // AcquireBlock
+      is(7.U) { baseCredit := 1.U(16.W) }  // AcquirePerm
+    }
     baseCredit << size
   }
 

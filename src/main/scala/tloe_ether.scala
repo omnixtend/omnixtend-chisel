@@ -78,16 +78,18 @@ class TLOEEther extends Module {
   def getTxKeep(size: UInt): UInt = {
     // Calculate txkeep based on packet size
     // For 64-bit data, each bit in txkeep corresponds to 8 bits of data
-    MuxLookup(size, 0xFF.U(8.W), Seq(
-      1.U -> 0x01.U(8.W),  // 8 bits
-      2.U -> 0x03.U(8.W),  // 16 bits
-      3.U -> 0x07.U(8.W),  // 24 bits
-      4.U -> 0x0F.U(8.W),  // 32 bits
-      5.U -> 0x1F.U(8.W),  // 40 bits
-      6.U -> 0x3F.U(8.W),  // 48 bits
-      7.U -> 0x7F.U(8.W),  // 56 bits
-      8.U -> 0xFF.U(8.W)   // 64 bits
-    ))
+    val txkeep = WireDefault(0xFF.U(8.W))
+    switch(size) {
+      is(1.U) { txkeep := 0x01.U(8.W) }  // 8 bits
+      is(2.U) { txkeep := 0x03.U(8.W) }  // 16 bits
+      is(3.U) { txkeep := 0x07.U(8.W) }  // 24 bits
+      is(4.U) { txkeep := 0x0F.U(8.W) }  // 32 bits
+      is(5.U) { txkeep := 0x1F.U(8.W) }  // 40 bits
+      is(6.U) { txkeep := 0x3F.U(8.W) }  // 48 bits
+      is(7.U) { txkeep := 0x7F.U(8.W) }  // 56 bits
+      is(8.U) { txkeep := 0xFF.U(8.W) }  // 64 bits
+    }
+    txkeep
   }
 
   def handleTxPath(): Unit = {
