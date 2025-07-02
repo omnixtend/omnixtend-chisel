@@ -6,13 +6,7 @@ import freechips.rocketchip.tilelink._
 
 class TileLinkHandler extends Module {
   val io = IO(new Bundle {
-    /*
-    // Input signals for enqueue
-    val enqValid = Input(Bool())
-    val enqBits = Input(UInt(80.W))
-    */
-
-    val rxPacketVec = Input(Vec(34, UInt(64.W)))  // Reduced from 68 to 34
+    val rxPacketVec = Input(Vec(68, UInt(64.W)))
     val rxPacketVecSize = Input(UInt(8.W))
     val doTilelinkHandler = Input(Bool())
 
@@ -24,32 +18,7 @@ class TileLinkHandler extends Module {
     val ep_rxAddr = Output(UInt(64.W))
     val ep_rxData = Output(UInt(512.W))
     val ep_rxValid = Output(Bool())
-
-    /*
-    // Queue status signals
-    val queueFull = Output(Bool())
-    val queueEmpty = Output(Bool())
-    val queueCount = Output(UInt(5.W))  // 16 entries need 5 bits
-    */
   })
-
-  /*
-  // Create input and output wires for the queue
-  val queueIn = Wire(Decoupled(UInt(80.W)))
-  val queueOut = Wire(Decoupled(UInt(80.W)))
-
-  // Initialize queue with 16 entries
-  val tlMsgBuffer = Module(new Queue(UInt(80.W), 16))
-  tlMsgBuffer.io.enq <> queueIn
-  tlMsgBuffer.io.deq <> queueOut
-  */
-
-  /*
-  // Queue status signals
-  io.queueFull := !tlMsgBuffer.io.enq.ready
-  io.queueEmpty := !tlMsgBuffer.io.deq.valid
-  io.queueCount := tlMsgBuffer.io.count
-  */
 
   // Initialize outputs
   io.ep_rxOpcode := 0.U
@@ -60,125 +29,23 @@ class TileLinkHandler extends Module {
   io.ep_rxData := 0.U
   io.ep_rxValid := false.B
 
-  /*
-  // Connect external enqueue interface
-  queueIn.valid := io.enqValid
-  queueIn.bits := io.enqBits
-  */
-
-/*
-  // Process messages from queue
-  when(queueOut.valid) {
-    val currentMsg = queueOut.bits
-    
-    // Extract fields from 80-bit message
-    val channel = currentMsg(79, 77)  // 3 bits
-    val opcode = currentMsg(76, 74)   // 3 bits
-    val size = currentMsg(73, 71)     // 3 bits
-    val data = currentMsg(70, 7)      // 64 bits
-    val addr = currentMsg(6, 0)       // 7 bits
-    
-    // Process based on channel and opcode
-    switch(channel) {
-      is(1.U) { // Channel A
-        switch(opcode) {
-          is(0.U) { // PutFullData
-            io.ep_rxdata := addr
-            io.ep_rxvalid := true.B
-          }
-          is(1.U) { // PutPartialData
-            io.ep_rxdata := addr
-            io.ep_rxvalid := true.B
-          }
-          is(4.U) { // Get
-            io.ep_rxdata := addr
-            io.ep_rxvalid := true.B
-          }
-        }
-      }
-      is(2.U) { // Channel B
-        switch(opcode) {
-          is(TLMessages.PutFullData) {
-            io.ep_rxdata := addr
-            io.ep_rxvalid := true.B
-          }
-          is(TLMessages.Get) {
-            io.ep_rxdata := addr
-            io.ep_rxvalid := true.B
-          }
-        }
-      }
-      is(3.U) { // Channel C
-        switch(opcode) {
-          is(TLMessages.AccessAck) {
-            io.ep_rxdata := addr
-            io.ep_rxvalid := true.B
-          }
-          is(TLMessages.AccessAckData) {
-            io.ep_rxdata := addr
-            io.ep_rxvalid := true.B
-          }
-        }
-      }
-      is(4.U) { // Channel D
-        switch(opcode) {
-          is(TLMessages.AccessAck) {
-            io.ep_rxdata := 0.U
-            io.ep_rxvalid := true.B
-          }
-          is(TLMessages.AccessAckData) {
-            io.ep_rxdata := data
-            io.ep_rxvalid := true.B
-          }
-        }
-      }
-      is(5.U) { // Channel E
-        io.ep_rxdata := addr
-        io.ep_rxvalid := true.B
-      }
-    }
-
-    // Acknowledge the message has been processed
-    queueOut.ready := true.B
-  }.otherwise {
-    queueOut.ready := false.B
-  }
-*/
   val tlIdle :: tlGetMask :: tlGetTlHeader :: tlHandle :: tlDone :: Nil = Enum(5)
   val tlHandlerState = RegInit(tlIdle)
 
-  val tlPacketVec = Reg(Vec(34, UInt(64.W)))  // Reduced from 68 to 34
+  val tlPacketVec = Reg(Vec(68, UInt(64.W)))
   val tlPacketVecSize = RegInit(0.U(8.W))
+
   val tlHeader = Reg(new TLMessageHigh)
   val tlHeaderLow = Reg(new TLMessageLow)
-  val mask = Reg(UInt(34.W))  // Reduced from 68 to 34
-  val offset = Reg(UInt(6.W))
 
-  val doth_tl = RegInit(false.B)
-  doth_tl := io.doTilelinkHandler
+  val mask = Reg(UInt(68.W))
+  val offset = Reg(UInt(6.W))
 
   // TileLink Handler
   when(io.doTilelinkHandler) {
-    // Only copy the first 34 elements to save LUTs
-    for (i <- 0 until 34) {
-      tlPacketVec(i) := io.rxPacketVec(i)
-    }
+    tlPacketVec := io.rxPacketVec
     tlPacketVecSize := io.rxPacketVecSize
     tlHandlerState := tlGetMask
-  }
-
-  // Optimized getMask function - simplified for smaller vectors
-  def getMaskOptimized(packet: Vec[UInt], size: UInt): UInt = {
-    // Simplified mask extraction for smaller packets
-    Mux(size <= 4.U,
-      // For small packets, use a simpler approach
-      Cat(packet(size-1.U)(15, 0), packet(size)(63, 16)),
-      // For larger packets, use the original logic but with bounds checking
-      {
-        val safeSize = Mux(size > 34.U, 34.U, size)
-        Cat(packet(safeSize-2.U)(15, 0), packet(safeSize-1.U)(63, 16))
-      }
-    )
   }
 
   switch(tlHandlerState) {
@@ -186,9 +53,28 @@ class TileLinkHandler extends Module {
     }
 
     is(tlGetMask) {
-      // Find first set bit in mask (LSB first)
-      mask := getMaskOptimized(tlPacketVec, tlPacketVecSize)
-      offset := PriorityEncoder(getMaskOptimized(tlPacketVec, tlPacketVecSize))
+      // Simplified mask calculation - only check first 16 bits to reduce LUT usage
+      mask := TloePacGen.getMask(tlPacketVec, tlPacketVecSize)
+      
+      // Simplified offset calculation - only check first 16 bits
+      offset := 0.U
+      when(mask(0)) { offset := 0.U }
+      .elsewhen(mask(1)) { offset := 1.U }
+      .elsewhen(mask(2)) { offset := 2.U }
+      .elsewhen(mask(3)) { offset := 3.U }
+      .elsewhen(mask(4)) { offset := 4.U }
+      .elsewhen(mask(5)) { offset := 5.U }
+      .elsewhen(mask(6)) { offset := 6.U }
+      .elsewhen(mask(7)) { offset := 7.U }
+      .elsewhen(mask(8)) { offset := 8.U }
+      .elsewhen(mask(9)) { offset := 9.U }
+      .elsewhen(mask(10)) { offset := 10.U }
+      .elsewhen(mask(11)) { offset := 11.U }
+      .elsewhen(mask(12)) { offset := 12.U }
+      .elsewhen(mask(13)) { offset := 13.U }
+      .elsewhen(mask(14)) { offset := 14.U }
+      .elsewhen(mask(15)) { offset := 15.U }
+
       tlHandlerState := tlGetTlHeader
     }
 
@@ -218,46 +104,36 @@ class TileLinkHandler extends Module {
       io.ep_rxSource := tlHeader.source
       io.ep_rxAddr := tlHeaderLow.addr
 
-      // Simplified channel processing - only handle the most common case
-      when(tlHeader.chan === 4.U && tlHeader.opcode === TLMessages.AccessAckData) {
-        // Channel D with AccessAckData - simplified data extraction
-        val baseOffset = 3.U +& offset
-        val dataOffset = 4.U +& offset
-        
-        // Use a more efficient data extraction method
-        val dataSize = (1.U << tlHeader.size) - 1.U
-        val extractedData = Wire(UInt(512.W))
-        
-        // Simplified data extraction - only handle common sizes
-        when(tlHeader.size <= 3.U) {
-          // For smaller sizes, use direct concatenation
-          extractedData := Cat(
-            TloePacGen.toBigEndian(tlPacketVec(baseOffset))(15, 0),
-            TloePacGen.toBigEndian(tlPacketVec(dataOffset))(63, 16)
-          )
-        }.otherwise {
-          // For larger sizes, use a simplified approach
-          val numWords = Mux(tlHeader.size <= 5.U, 1.U << (tlHeader.size - 3.U), 8.U)
-          val dataVec = Wire(Vec(8, UInt(64.W)))
-          
-          for (i <- 0 until 8) {
-            when(i.U < numWords && (baseOffset + i.U) < 34.U) {
-              dataVec(i) := TloePacGen.toBigEndian(tlPacketVec(baseOffset + i.U))
-            }.otherwise {
-              dataVec(i) := 0.U
-            }
+      // Simplified channel processing - only handle Channel D (4)
+      when(tlHeader.chan === 4.U) {
+        when(tlHeader.opcode === TLMessages.AccessAck) {
+          io.ep_rxData := 0.U
+        }.elsewhen(tlHeader.opcode === TLMessages.AccessAckData) {
+          // Simplified data extraction - only handle common sizes
+          when(tlHeader.size === 0.U) {
+            io.ep_rxData := TloePacGen.toBigEndian(tlPacketVec(3.U +& offset))(15, 8)
+          }.elsewhen(tlHeader.size === 1.U) {
+            io.ep_rxData := TloePacGen.toBigEndian(tlPacketVec(3.U +& offset))(15, 0)
+          }.elsewhen(tlHeader.size === 2.U) {
+            io.ep_rxData := Cat(
+              TloePacGen.toBigEndian(tlPacketVec(3.U +& offset))(15, 0),
+              TloePacGen.toBigEndian(tlPacketVec(4.U +& offset))(63, 48) 
+            )
+          }.elsewhen(tlHeader.size === 3.U) {
+            io.ep_rxData := Cat(
+              TloePacGen.toBigEndian(tlPacketVec(3.U +& offset))(15, 0),
+              TloePacGen.toBigEndian(tlPacketVec(4.U +& offset))(63, 16)
+            )
+          }.otherwise {
+            // Default case for larger sizes
+            io.ep_rxData := Cat(
+              TloePacGen.toBigEndian(tlPacketVec(3.U +& offset))(15, 0),
+              TloePacGen.toBigEndian(tlPacketVec(4.U +& offset))(63, 0)
+            )
           }
-          
-          extractedData := Cat(dataVec.reverse)
         }
-        
-        io.ep_rxData := extractedData & dataSize
-        io.ep_rxValid := true.B
-      }.otherwise {
-        // For other channels/opcodes, use address as data
-        io.ep_rxData := tlHeaderLow.addr
-        io.ep_rxValid := true.B
       }
+      io.ep_rxValid := true.B
 
       tlHandlerState := tlDone   
     }
